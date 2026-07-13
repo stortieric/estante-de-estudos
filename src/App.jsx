@@ -43,6 +43,27 @@ function useWide() {
   return wide;
 }
 
+/* ---------- RETRY COM REFRESH DE SESSÃO ----------
+   Tokens recém-emitidos podem ser rejeitados por desvio de relógio de
+   poucos segundos entre os serviços do Supabase ("JWT issued at future").
+   Renovar a sessão e tentar de novo com backoff resolve sem o usuário ver. */
+async function comRetry(fn, tentativas = 3) {
+  let ultimoErro;
+  for (let i = 0; i < tentativas; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      ultimoErro = e;
+      const msg = (e && e.message ? e.message : String(e)).toLowerCase();
+      const transitorio = msg.includes("future") || msg.includes("jwt") || msg.includes("expired");
+      if (!transitorio) throw e;
+      await new Promise(r => setTimeout(r, 1500 * (i + 1)));
+      try { await supabase.auth.refreshSession(); } catch {}
+    }
+  }
+  throw ultimoErro;
+}
+
 /* ---------- CARGA DE DADOS ---------- */
 async function loadConteudo() {
   const [{ data: cursosRows, error: e1 }, { data: modRows, error: e2 }] = await Promise.all([
@@ -113,7 +134,7 @@ function App({ session }) {
   const wide = useWide();
 
   useEffect(() => {
-    Promise.all([loadConteudo(), loadProgresso(userId)])
+    Promise.all([comRetry(loadConteudo), comRetry(() => loadProgresso(userId))])
       .then(([c, p]) => { setCursos(c); setState(p); })
       .catch((e) => setErro(e.message || String(e)));
   }, [userId]);
@@ -153,7 +174,11 @@ function App({ session }) {
     <div style={st.page}>
       <h1 style={st.h1}>Ops.</h1>
       <p style={st.p}>Não consegui carregar os dados: {erro}</p>
-      <p style={st.hint}>Confira se o schema.sql e o seed.sql foram executados no Supabase e se as variáveis VITE_SUPABASE_* estão configuradas.</p>
+      <div style={st.gradeRow}>
+        <button style={{ ...st.btnGrade, background: "#2B4C8C" }} onClick={() => window.location.reload()}>Tentar de novo</button>
+        <button style={{ ...st.btnGrade, background: "#C4453C" }} onClick={async () => { await supabase.auth.signOut(); window.location.reload(); }}>Sair e entrar de novo</button>
+      </div>
+      <p style={st.hint}>Se o problema persistir: confira se o schema.sql e o seed.sql foram executados no Supabase e se as variáveis VITE_SUPABASE_* estão configuradas.</p>
     </div>
   );
   if (!cursos || !state) return <div style={st.loading}>Abrindo a estante…</div>;
